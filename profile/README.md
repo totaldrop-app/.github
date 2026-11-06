@@ -8,7 +8,7 @@
 **Any file, to anyone, anywhere.**<br>
 Free and open source. End-to-end encrypted. No email, no phone number, no account.
 
-**[totaldrop.app](https://totaldrop.app)** · [Download](https://totaldrop.app/download/) · [Source code](https://github.com/totaldrop-app/totaldrop) · [Roadmap](https://totaldrop.app/roadmap/) · [Donate](https://totaldrop.app/donate/)
+**[totaldrop.app](https://totaldrop.app)** · [Download](https://totaldrop.app/download/) · [Source code](https://github.com/totaldrop-app/totaldrop) · [Roadmap](https://totaldrop.app/roadmap/) · [Donate](https://totaldrop.app/donate/) · [X](https://x.com/totaldropapp)
 
 <sub>In 35 languages: [README](https://github.com/totaldrop-app/totaldrop#readme)</sub>
 
