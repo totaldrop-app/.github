@@ -15,6 +15,7 @@ from unittest import mock
 
 from export_project_board import (
     ADD_PROJECT_ITEM_MUTATION,
+    LINK_PROJECT_REPO_MUTATION,
     ORG_REPOS_QUERY,
     PROJECT_ITEMS_QUERY,
     PROJECT_META_QUERY,
@@ -285,6 +286,11 @@ class ExportProjectBoardTests(unittest.TestCase):
                             "public": True,
                             "closed": False,
                             "updatedAt": "2026-11-16T10:00:00Z",
+                            "repositories": {
+                                "nodes": [
+                                    {"id": "R_MONO", "nameWithOwner": "totaldrop-app/totaldrop"}
+                                ]
+                            },
                             "views": {"nodes": []},
                             "fields": {
                                 "nodes": [
@@ -414,8 +420,16 @@ class ExportProjectBoardTests(unittest.TestCase):
                         "repositories": {
                             "pageInfo": {"hasNextPage": False, "endCursor": None},
                             "nodes": [
-                                {"name": "totaldrop", "nameWithOwner": "totaldrop-app/totaldrop"},
-                                {"name": "totaldrop-site", "nameWithOwner": "totaldrop-app/totaldrop-site"},
+                                {
+                                    "id": "R_MONO",
+                                    "name": "totaldrop",
+                                    "nameWithOwner": "totaldrop-app/totaldrop",
+                                },
+                                {
+                                    "id": "R_SITE",
+                                    "name": "totaldrop-site",
+                                    "nameWithOwner": "totaldrop-app/totaldrop-site",
+                                },
                             ],
                         }
                     }
@@ -482,6 +496,9 @@ class ExportProjectBoardTests(unittest.TestCase):
                         }
                     }
                 }
+            if query == LINK_PROJECT_REPO_MUTATION:
+                mutations.append(("link_repo", variables))
+                return {"linkProjectV2ToRepository": {"repository": {"nameWithOwner": "totaldrop-app/totaldrop-site"}}}
             if query == ADD_PROJECT_ITEM_MUTATION:
                 mutations.append(("add", variables))
                 return {"addProjectV2ItemById": {"item": {"id": "PVTI_NEW_SITE_5"}}}
@@ -495,14 +512,17 @@ class ExportProjectBoardTests(unittest.TestCase):
             1,
             "write-token",
             repo_read_token="public-token",
+            post_add_settle_seconds=0.0,
             requester=fake_requester,
         )
         self.assertEqual(result["status"], "applied")
         self.assertEqual(result["applied_status_update_count"], 3)
         self.assertEqual(result["applied_addition_count"], 1)
+        self.assertEqual(result["newly_linked_repositories"], ["totaldrop-app/totaldrop-site"])
         self.assertEqual(
             mutations,
             [
+                ("link_repo", {"projectId": "PVT_1", "repositoryId": "R_SITE"}),
                 ("update", {"projectId": "PVT_1", "itemId": "PVTI_450", "fieldId": "F_STATUS", "optionId": "OPT_DONE"}),
                 ("update", {"projectId": "PVT_1", "itemId": "PVTI_32", "fieldId": "F_STATUS", "optionId": "OPT_REV"}),
                 ("update", {"projectId": "PVT_1", "itemId": "PVTI_31", "fieldId": "F_STATUS", "optionId": "OPT_PROG"}),

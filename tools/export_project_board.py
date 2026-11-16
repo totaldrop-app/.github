@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 from typing import Any, Callable
 import urllib.error
 import urllib.request
@@ -40,7 +41,7 @@ BIDI_CODEPOINTS = frozenset(
 
 TITLE_ISSUE_RE = re.compile(r"(?<![A-Za-z0-9_./-])#(\d+)\b")
 PRIMARY_BODY_ISSUE_RE = re.compile(
-    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|kapatır):?[ \t]+"
+    r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+"
     r"(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)|(?<![A-Za-z0-9_./-])#(\d+))\b"
 )
 FALLBACK_BODY_ISSUE_RE = re.compile(
@@ -60,6 +61,12 @@ query($org: String!, $number: Int!) {
       public
       closed
       updatedAt
+      repositories(first: 50) {
+        nodes {
+          id
+          nameWithOwner
+        }
+      }
       views(first: 20) {
         nodes {
           name
@@ -195,6 +202,7 @@ query($org: String!, $after: String) {
         endCursor
       }
       nodes {
+        id
         name
         nameWithOwner
       }
@@ -241,6 +249,16 @@ query($owner: String!, $name: String!, $after: String) {
           }
         }
       }
+    }
+  }
+}
+"""
+
+LINK_PROJECT_REPO_MUTATION = """
+mutation($projectId: ID!, $repositoryId: ID!) {
+  linkProjectV2ToRepository(input: {projectId: $projectId, repositoryId: $repositoryId}) {
+    repository {
+      nameWithOwner
     }
   }
 }
@@ -586,26 +604,35 @@ def _fetch_org_repo_state(
     org: str,
     read_token: str,
     requester: Callable[[str, dict[str, Any], str], dict[str, Any]],
-) -> tuple[list[dict[str, Any]], set[tuple[str, int]], set[tuple[str, int]]]:
-    """Return all open issues across non-archived org repos plus ready/draft PR issue sets."""
-    repos: list[tuple[str, str]] = []
+) -> tuple[list[dict[str, str]], list[dict[str, Any]], set[tuple[str, int]], set[tuple[str, int]]]:
+    """Return org repos, open issues across non-archived repos, and ready/draft PR issue sets."""
+    repos: list[dict[str, str]] = []
     cursor: str | None = None
     for _ in range(MAX_REPO_PAGES):
         data = requester(ORG_REPOS_QUERY, {"org": org, "after": cursor}, read_token)
         repos_conn = ((data.get("organization") or {}).get("repositories")) or {}
         for rnode in repos_conn.get("nodes") or []:
             if isinstance(rnode, dict) and rnode.get("name") and rnode.get("nameWithOwner"):
-                repos.append((str(rnode["name"]), str(rnode["nameWithOwner"])))
+                repos.append(
+                    {
+                        "id": sanitize_text(str(rnode.get("id") or ""), collapse_whitespace=True),
+                        "name": str(rnode["name"]),
+                        "full_name": str(rnode["nameWithOwner"]),
+                    }
+                )
         pinfo = repos_conn.get("pageInfo") or {}
         if not pinfo.get("hasNextPage") or not pinfo.get("endCursor"):
             break
         cursor = str(pinfo["endCursor"])
 
+    repos.sort(key=lambda entry: entry["full_name"])
     open_issues: list[dict[str, Any]] = []
     ready_linked: set[tuple[str, int]] = set()
     draft_linked: set[tuple[str, int]] = set()
 
-    for repo_name, repo_full in sorted(repos, key=lambda pair: pair[1]):
+    for repo_info in repos:
+        repo_name = repo_info["name"]
+        repo_full = repo_info["full_name"]
         icursor: str | None = None
         for _ in range(MAX_REPO_PAGES):
             idata = requester(
@@ -650,7 +677,7 @@ def _fetch_org_repo_state(
                 break
             pcursor = str(ppinfo["endCursor"])
 
-    return open_issues, ready_linked, draft_linked - ready_linked
+    return repos, open_issues, ready_linked, draft_linked - ready_linked
 
 
 def _find_option_id(option_map: dict[str, tuple[str, str]], target_label: str) -> tuple[str, str]:
@@ -669,9 +696,10 @@ def reconcile_project_board(
     project_token: str,
     *,
     repo_read_token: str | None = None,
+    post_add_settle_seconds: float = 2.5,
     requester: Callable[[str, dict[str, Any], str], dict[str, Any]] = graphql_request,
 ) -> dict[str, Any]:
-    """Synchronize ProjectV2 Status columns and onboard missing open organization issues."""
+    """Synchronize ProjectV2 Status columns, repository links, and open organization issues."""
     meta_data = requester(PROJECT_META_QUERY, {"org": org, "number": number}, project_token)
     org_node = meta_data.get("organization")
     if not isinstance(org_node, dict) or not isinstance(org_node.get("projectV2"), dict):
@@ -682,6 +710,12 @@ def reconcile_project_board(
 
     project = org_node["projectV2"]
     project_id = str(project.get("id") or "")
+    already_linked_repos = {
+        str(r.get("nameWithOwner"))
+        for r in (((project.get("repositories") or {}).get("nodes")) or [])
+        if isinstance(r, dict) and r.get("nameWithOwner")
+    }
+
     status_field_id = ""
     option_map: dict[str, tuple[str, str]] = {}
     for fnode in ((project.get("fields") or {}).get("nodes")) or []:
@@ -710,7 +744,9 @@ def reconcile_project_board(
 
     existing_items = _fetch_paginated_items(org, number, project_token, requester)
     read_tok = repo_read_token or project_token
-    open_issues, ready_linked, draft_only_linked = _fetch_org_repo_state(org, read_tok, requester)
+    org_repos, open_issues, ready_linked, draft_only_linked = _fetch_org_repo_state(
+        org, read_tok, requester
+    )
 
     tracked_issues: set[tuple[str, int]] = set()
     planned_updates: list[dict[str, Any]] = []
@@ -743,9 +779,17 @@ def reconcile_project_board(
                     desired_option = (in_review_id, in_review_name)
                     reason = "linked open non-draft PR"
             elif key in draft_only_linked:
-                if current_status.lower() in (backlog_name.lower(), "(no status)"):
+                if current_status.lower() in (
+                    backlog_name.lower(),
+                    "(no status)",
+                    in_review_name.lower(),
+                    done_name.lower(),
+                ):
                     desired_option = (in_progress_id, in_progress_name)
                     reason = "linked open draft PR"
+            elif current_status.lower() == done_name.lower():
+                desired_option = (backlog_id, backlog_name)
+                reason = "reopened issue without open PR"
 
         if desired_option is not None:
             planned_updates.append(
@@ -783,6 +827,23 @@ def reconcile_project_board(
             }
         )
 
+    newly_linked_repos: list[str] = []
+    repo_link_warning = ""
+    for repo_info in org_repos:
+        if repo_info["id"] and repo_info["full_name"] not in already_linked_repos:
+            try:
+                requester(
+                    LINK_PROJECT_REPO_MUTATION,
+                    {"projectId": project_id, "repositoryId": repo_info["id"]},
+                    project_token,
+                )
+                newly_linked_repos.append(
+                    sanitize_text(repo_info["full_name"], collapse_whitespace=True)
+                )
+            except ProjectExportError as exc:
+                repo_link_warning = str(exc)
+                break
+
     applied_updates: list[dict[str, str]] = []
     applied_additions: list[dict[str, str]] = []
 
@@ -807,6 +868,7 @@ def reconcile_project_board(
                 }
             )
 
+        added_with_ids: list[tuple[str, dict[str, Any]]] = []
         for add in planned_additions:
             add_resp = requester(
                 ADD_PROJECT_ITEM_MUTATION,
@@ -816,6 +878,14 @@ def reconcile_project_board(
             new_item_id = str(
                 (((add_resp.get("addProjectV2ItemById") or {}).get("item")) or {}).get("id") or ""
             )
+            added_with_ids.append((new_item_id, add))
+
+        # Allow GitHub's built-in asynchronous "Item added / PR linked" ProjectV2 hook to
+        # settle before writing the authoritative Status column for newly onboarded items.
+        if added_with_ids and post_add_settle_seconds > 0:
+            time.sleep(post_add_settle_seconds)
+
+        for new_item_id, add in added_with_ids:
             if new_item_id:
                 requester(
                     UPDATE_PROJECT_STATUS_MUTATION,
@@ -843,18 +913,23 @@ def reconcile_project_board(
                 "planned_addition_count": len(planned_additions),
                 "applied_status_update_count": len(applied_updates),
                 "applied_addition_count": len(applied_additions),
+                "newly_linked_repositories": newly_linked_repos,
             }
         raise
 
-    return {
+    result: dict[str, Any] = {
         "status": "applied",
         "planned_status_update_count": len(planned_updates),
         "planned_addition_count": len(planned_additions),
         "applied_status_update_count": len(applied_updates),
         "applied_addition_count": len(applied_additions),
+        "newly_linked_repositories": newly_linked_repos,
         "status_updates": applied_updates,
         "added_items": applied_additions,
     }
+    if repo_link_warning:
+        result["repo_link_warning"] = repo_link_warning
+    return result
 
 
 def fetch_project_snapshot(
@@ -887,6 +962,12 @@ def fetch_project_snapshot(
             "public": False,
             "skipped_private": True,
         }
+
+    linked_repositories = sorted(
+        sanitize_text(str(r.get("nameWithOwner")), collapse_whitespace=True)
+        for r in (((project.get("repositories") or {}).get("nodes")) or [])
+        if isinstance(r, dict) and r.get("nameWithOwner")
+    )
 
     status_options: list[dict[str, str]] = []
     fields_summary: list[dict[str, Any]] = []
@@ -955,6 +1036,7 @@ def fetch_project_snapshot(
         "closed": bool(project.get("closed", False)),
         "updated_at": sanitize_text(project.get("updatedAt"), collapse_whitespace=True),
         "skipped_private": False,
+        "linked_repositories": linked_repositories,
         "views": views_summary,
         "fields": fields_summary,
         "active_item_count": len(active_items),
@@ -992,6 +1074,9 @@ def render_markdown_summary(snapshot: dict[str, Any]) -> str:
         f"- **Active items:** `{snapshot.get('active_item_count', 0)}` "
         f"(archived: `{snapshot.get('archived_item_count', 0)}`)",
     ]
+    linked_repos = snapshot.get("linked_repositories") or []
+    if linked_repos:
+        lines.append(f"- **Linked repositories:** `{len(linked_repos)}`")
     desc = snapshot.get("short_description") or ""
     if desc:
         lines.append(f"- **Description:** {desc}")
@@ -1011,7 +1096,8 @@ def render_markdown_summary(snapshot: dict[str, Any]) -> str:
             lines.append(
                 f"- **Reconciliation:** `applied` "
                 f"(status updates: `{reconcile.get('applied_status_update_count', 0)}`, "
-                f"newly onboarded org issues: `{reconcile.get('applied_addition_count', 0)}`)"
+                f"newly onboarded org issues: `{reconcile.get('applied_addition_count', 0)}`, "
+                f"newly linked repos: `{len(reconcile.get('newly_linked_repositories') or [])}`)"
             )
         elif r_status == "read_only_token":
             lines.append(
