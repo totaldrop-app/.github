@@ -14,7 +14,7 @@ Free and open source · Post-quantum end-to-end encrypted · Accountless by defa
 
 ---
 
-## Modular Ecosystem (11 Repositories · 55 Sub-Platform × CPU Targets)
+## Modular Ecosystem (11 Repositories · 53 Active Sub-Platform × CPU Targets)
 
 All engineering, issues, pull requests, code reviews, and documentation across `totaldrop-app` run **100% in English** ([ADR 0019](https://github.com/totaldrop-app/totaldrop-core/blob/main/docs/decisions/0019-english-by-default.md), [ADR 0020](https://github.com/totaldrop-app/totaldrop-core/blob/main/docs/decisions/0020-modular-subplatform-matrix.md)).
 
@@ -30,7 +30,7 @@ All engineering, issues, pull requests, code reviews, and documentation across `
 | **[totaldrop-macos](https://github.com/totaldrop-app/totaldrop-macos)** | Native SwiftUI 6 / AppKit macOS client | `dmg`, `pkg`, `homebrew` (`arm64`, `x86_64`) |
 | **[totaldrop-ios-tvos](https://github.com/totaldrop-app/totaldrop-ios-tvos)** | Native SwiftUI 6 iOS, iPadOS & tvOS client + Share Extension | `ios-ipa`, `tvos-ipa` (`arm64`, `sim-arm64`, `sim-x86_64`) |
 | **[totaldrop-cli-bsd](https://github.com/totaldrop-app/totaldrop-cli-bsd)** | Standalone terminal CLI & BSD packages | `static-tar.gz`, `freebsd-pkg`, `openbsd-pkg` (`x86_64`, `arm64`, `riscv64`) |
-| **[totaldrop-web-wasm](https://github.com/totaldrop-app/totaldrop-web-wasm)** | Zero-framework browser WASM peer | `wasm32-simd128`, `wasm32-baseline` |
+| **[totaldrop-web-wasm](https://github.com/totaldrop-app/totaldrop-web-wasm)** | _Reserved / shelved (`Not planned` per [`totaldrop#30`](https://github.com/totaldrop-app/totaldrop/issues/30); servers reject browser `Origin` with `403` under threat model `T9`)_ | Reserved (`wasm32-simd128`, `wasm32-baseline` shelved) |
 
 ## Contributing
 
