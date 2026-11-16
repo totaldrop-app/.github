@@ -4,6 +4,8 @@
 name: Project Board Snapshot
 
 on:
+  issues:
+    types: [opened, closed, reopened, transferred]
   pull_request:
     paths:
       - ".github/workflows/project-board.yml"
@@ -11,16 +13,18 @@ on:
       - "tools/test_export_project_board.py"
   push:
     branches: [main]
+  repository_dispatch:
+    types: [sync-project-board]
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: project-board-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: project-board-${{ github.event.pull_request.number || 'org-sync' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   snapshot:
