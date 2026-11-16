@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: 2026 The TotalDrop Contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  CI:
+    name: CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Validate governance files, CODEOWNERS, and YAML issue templates
+        run: |
+          python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet --user pyyaml
+          python3 - <<'PY'
+          from pathlib import Path
+          import sys
+          import yaml
+
+          required = [
+              "AGENTS.md",
+              "CODE_OF_CONDUCT.md",
+              "CONTRIBUTING.md",
+              "GOVERNANCE.md",
+              "SECURITY.md",
+              "profile/README.md",
+              ".github/CODEOWNERS",
+              ".github/PULL_REQUEST_TEMPLATE.md",
+              ".github/ISSUE_TEMPLATE/config.yml",
+              ".github/ISSUE_TEMPLATE/bug_report.yml",
+              ".github/ISSUE_TEMPLATE/feature_request.yml",
+              ".github/ISSUE_TEMPLATE/subplatform_package.yml",
+              ".github/ISSUE_TEMPLATE/translation_review.yml",
+          ]
+          for rel in required:
+              p = Path(rel)
+              assert p.is_file() and p.stat().st_size > 0, f"Missing or empty required file: {rel}"
+
+          codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
+          assert "@sadikkuzu" in codeowners and "@ozdil" in codeowners, "CODEOWNERS must list both @sadikkuzu and @ozdil"
+
+          gov = Path("GOVERNANCE.md").read_text(encoding="utf-8")
+          assert "@sadikkuzu" in gov and "@ozdil" in gov, "GOVERNANCE.md must list both Core Maintainers"
+
+          for yml_path in sorted(Path(".github/ISSUE_TEMPLATE").glob("*.yml")):
+              data = yaml.safe_load(yml_path.read_text(encoding="utf-8"))
+              assert isinstance(data, dict) and data, f"Invalid YAML in {yml_path}"
+
+          print("All organization governance files, CODEOWNERS, and YAML templates validated.")
+          PY

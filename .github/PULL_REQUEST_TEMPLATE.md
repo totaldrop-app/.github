@@ -11,4 +11,4 @@ Closes #
 - [ ] Untrusted strings (filenames, device names, peer errors) are sanitized against control and Bidi characters before rendering.
 - [ ] Protocol changes update `docs/protocol-v0.1-notes.md`; architectural changes add/update an ADR in `docs/decisions/`.
 - [ ] User-facing text changes update `totaldrop-core/l10n/` (`en` source first, respecting `l10n/status.json` critical security string gates).
-- [ ] Independent code review completed prior to rebase merge.
+- [ ] Co-maintainer review requested (`@sadikkuzu` / `@ozdil`) and explicitly `APPROVED` prior to rebase merge (no direct pushes or self-merges to `main`).
