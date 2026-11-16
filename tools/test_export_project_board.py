@@ -14,12 +14,19 @@ import unittest
 from unittest import mock
 
 from export_project_board import (
+    ADD_PROJECT_ITEM_MUTATION,
+    ORG_REPOS_QUERY,
     PROJECT_ITEMS_QUERY,
     PROJECT_META_QUERY,
+    REPO_OPEN_ISSUES_QUERY,
+    REPO_OPEN_PRS_QUERY,
+    UPDATE_PROJECT_STATUS_MUTATION,
     ProjectExportError,
     escape_md_cell,
+    extract_pr_linked_issues,
     fetch_project_snapshot,
     main,
+    reconcile_project_board,
     render_markdown_summary,
     sanitize_text,
 )
@@ -36,6 +43,40 @@ class ExportProjectBoardTests(unittest.TestCase):
         self.assertEqual(
             escape_md_cell("col1 | a\\b\nline2\u200f"),
             "col1 \\| a\\\\b line2\\u200f",
+        )
+
+    def test_extract_pr_linked_issues_two_tier_and_cross_repo_guards(self) -> None:
+        # Primary target (#29) suppresses secondary `Refs #541` follow-up mentions.
+        pr_with_primary = {
+            "title": "feat(android): show send QR code (#29)",
+            "body": "Closes #29\nRefs #541 (follow-up privacy update)",
+            "closingIssuesReferences": {"nodes": []},
+        }
+        self.assertEqual(
+            extract_pr_linked_issues("totaldrop-app/totaldrop", pr_with_primary),
+            {("totaldrop-app/totaldrop", 29)},
+        )
+
+        # Cross-repo reference in title (`totaldrop#30`) must NOT match local `#30`.
+        pr_cross_title = {
+            "title": "docs(profile): mark web-wasm shelved per totaldrop#30 (#7)",
+            "body": "Closes #7",
+            "closingIssuesReferences": {"nodes": []},
+        }
+        self.assertEqual(
+            extract_pr_linked_issues("totaldrop-app/.github", pr_cross_title),
+            {("totaldrop-app/.github", 7)},
+        )
+
+        # Fallback (`Part of #490` / `Refs #31`) activates when primary is empty.
+        pr_fallback = {
+            "title": "docs(decisions): translate decision 0016 to English",
+            "body": "Part of #490",
+            "closingIssuesReferences": {"nodes": []},
+        }
+        self.assertEqual(
+            extract_pr_linked_issues("totaldrop-app/totaldrop", pr_fallback),
+            {("totaldrop-app/totaldrop", 490)},
         )
 
     def test_private_project_fails_closed_without_querying_items(self) -> None:
@@ -155,6 +196,7 @@ class ExportProjectBoardTests(unittest.TestCase):
                                         },
                                         "content": {
                                             "__typename": "Issue",
+                                            "id": "I_29",
                                             "number": 29,
                                             "title": "Android: scan QR code\u202e",
                                             "state": "OPEN",
@@ -226,6 +268,326 @@ class ExportProjectBoardTests(unittest.TestCase):
         )
         self.assertNotIn("\\\\u202e", md)
         self.assertIn("Triage \\| unscheduled card", md)
+
+    def test_reconcile_moves_closed_ready_draft_and_onboards_modular_issues(self) -> None:
+        mutations: list[tuple[str, dict]] = []
+
+        def fake_requester(query: str, variables: dict, token: str) -> dict:
+            if query == PROJECT_META_QUERY:
+                return {
+                    "organization": {
+                        "projectV2": {
+                            "id": "PVT_1",
+                            "number": 1,
+                            "title": "totaldrop-kanban",
+                            "shortDescription": "",
+                            "url": "https://github.com/orgs/totaldrop-app/projects/1",
+                            "public": True,
+                            "closed": False,
+                            "updatedAt": "2026-11-16T10:00:00Z",
+                            "views": {"nodes": []},
+                            "fields": {
+                                "nodes": [
+                                    {
+                                        "__typename": "ProjectV2SingleSelectField",
+                                        "id": "F_STATUS",
+                                        "name": "Status",
+                                        "dataType": "SINGLE_SELECT",
+                                        "options": [
+                                            {"id": "OPT_BACKLOG", "name": "Backlog", "description": "", "color": "GRAY"},
+                                            {"id": "OPT_READY", "name": "Ready", "description": "", "color": "BLUE"},
+                                            {"id": "OPT_PROG", "name": "In progress", "description": "", "color": "YELLOW"},
+                                            {"id": "OPT_REV", "name": "In review", "description": "", "color": "PURPLE"},
+                                            {"id": "OPT_DONE", "name": "Done", "description": "", "color": "GREEN"},
+                                        ],
+                                    }
+                                ]
+                            },
+                        }
+                    }
+                }
+            if query == PROJECT_ITEMS_QUERY:
+                return {
+                    "organization": {
+                        "projectV2": {
+                            "items": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [
+                                    {
+                                        "id": "PVTI_450",
+                                        "type": "ISSUE",
+                                        "isArchived": False,
+                                        "createdAt": "2026-11-10T00:00:00Z",
+                                        "updatedAt": "2026-11-16T00:00:00Z",
+                                        "fieldValues": {
+                                            "nodes": [
+                                                {
+                                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                                    "name": "In review",
+                                                    "optionId": "OPT_REV",
+                                                    "field": {"name": "Status"},
+                                                }
+                                            ]
+                                        },
+                                        "content": {
+                                            "__typename": "Issue",
+                                            "id": "I_450",
+                                            "number": 450,
+                                            "title": "Low-severity hardenings",
+                                            "state": "CLOSED",
+                                            "stateReason": "COMPLETED",
+                                            "url": "https://github.com/totaldrop-app/totaldrop/issues/450",
+                                            "repository": {"nameWithOwner": "totaldrop-app/totaldrop"},
+                                            "milestone": None,
+                                            "labels": {"nodes": []},
+                                            "assignees": {"nodes": []},
+                                        },
+                                    },
+                                    {
+                                        "id": "PVTI_32",
+                                        "type": "ISSUE",
+                                        "isArchived": False,
+                                        "createdAt": "2026-11-01T00:00:00Z",
+                                        "updatedAt": "2026-11-15T00:00:00Z",
+                                        "fieldValues": {
+                                            "nodes": [
+                                                {
+                                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                                    "name": "Backlog",
+                                                    "optionId": "OPT_BACKLOG",
+                                                    "field": {"name": "Status"},
+                                                }
+                                            ]
+                                        },
+                                        "content": {
+                                            "__typename": "Issue",
+                                            "id": "I_32",
+                                            "number": 32,
+                                            "title": "Direct path upgrade",
+                                            "state": "OPEN",
+                                            "stateReason": None,
+                                            "url": "https://github.com/totaldrop-app/totaldrop/issues/32",
+                                            "repository": {"nameWithOwner": "totaldrop-app/totaldrop"},
+                                            "milestone": None,
+                                            "labels": {"nodes": []},
+                                            "assignees": {"nodes": []},
+                                        },
+                                    },
+                                    {
+                                        "id": "PVTI_31",
+                                        "type": "ISSUE",
+                                        "isArchived": False,
+                                        "createdAt": "2026-11-01T00:00:00Z",
+                                        "updatedAt": "2026-11-15T00:00:00Z",
+                                        "fieldValues": {
+                                            "nodes": [
+                                                {
+                                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                                    "name": "Backlog",
+                                                    "optionId": "OPT_BACKLOG",
+                                                    "field": {"name": "Status"},
+                                                }
+                                            ]
+                                        },
+                                        "content": {
+                                            "__typename": "Issue",
+                                            "id": "I_31",
+                                            "number": 31,
+                                            "title": "Resume transfers",
+                                            "state": "OPEN",
+                                            "stateReason": None,
+                                            "url": "https://github.com/totaldrop-app/totaldrop/issues/31",
+                                            "repository": {"nameWithOwner": "totaldrop-app/totaldrop"},
+                                            "milestone": None,
+                                            "labels": {"nodes": []},
+                                            "assignees": {"nodes": []},
+                                        },
+                                    },
+                                ],
+                            }
+                        }
+                    }
+                }
+            if query == ORG_REPOS_QUERY:
+                return {
+                    "organization": {
+                        "repositories": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {"name": "totaldrop", "nameWithOwner": "totaldrop-app/totaldrop"},
+                                {"name": "totaldrop-site", "nameWithOwner": "totaldrop-app/totaldrop-site"},
+                            ],
+                        }
+                    }
+                }
+            if query == REPO_OPEN_ISSUES_QUERY:
+                if variables["name"] == "totaldrop":
+                    return {
+                        "repository": {
+                            "issues": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [
+                                    {"id": "I_31", "number": 31, "title": "Resume transfers"},
+                                    {"id": "I_32", "number": 32, "title": "Direct path upgrade"},
+                                ],
+                            }
+                        }
+                    }
+                return {
+                    "repository": {
+                        "issues": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"id": "I_SITE_5", "number": 5, "title": "Remove @mstfyrdmc"}],
+                        }
+                    }
+                }
+            if query == REPO_OPEN_PRS_QUERY:
+                if variables["name"] == "totaldrop":
+                    return {
+                        "repository": {
+                            "pullRequests": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [
+                                    {
+                                        "number": 546,
+                                        "title": "feat: direct upgrade (#32)",
+                                        "isDraft": False,
+                                        "body": "",
+                                        "closingIssuesReferences": {"nodes": []},
+                                    },
+                                    {
+                                        "number": 499,
+                                        "title": "feat: resume",
+                                        "isDraft": True,
+                                        "body": "Refs #31",
+                                        "closingIssuesReferences": {"nodes": []},
+                                    },
+                                ],
+                            }
+                        }
+                    }
+                return {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {
+                                    "number": 6,
+                                    "title": "fix(site): remove Mustafa (#5)",
+                                    "isDraft": False,
+                                    "body": "Closes #5",
+                                    "closingIssuesReferences": {"nodes": []},
+                                }
+                            ],
+                        }
+                    }
+                }
+            if query == ADD_PROJECT_ITEM_MUTATION:
+                mutations.append(("add", variables))
+                return {"addProjectV2ItemById": {"item": {"id": "PVTI_NEW_SITE_5"}}}
+            if query == UPDATE_PROJECT_STATUS_MUTATION:
+                mutations.append(("update", variables))
+                return {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": variables["itemId"]}}}
+            raise AssertionError(f"Unexpected query: {query}")
+
+        result = reconcile_project_board(
+            "totaldrop-app",
+            1,
+            "write-token",
+            repo_read_token="public-token",
+            requester=fake_requester,
+        )
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual(result["applied_status_update_count"], 3)
+        self.assertEqual(result["applied_addition_count"], 1)
+        self.assertEqual(
+            mutations,
+            [
+                ("update", {"projectId": "PVT_1", "itemId": "PVTI_450", "fieldId": "F_STATUS", "optionId": "OPT_DONE"}),
+                ("update", {"projectId": "PVT_1", "itemId": "PVTI_32", "fieldId": "F_STATUS", "optionId": "OPT_REV"}),
+                ("update", {"projectId": "PVT_1", "itemId": "PVTI_31", "fieldId": "F_STATUS", "optionId": "OPT_PROG"}),
+                ("add", {"projectId": "PVT_1", "contentId": "I_SITE_5"}),
+                ("update", {"projectId": "PVT_1", "itemId": "PVTI_NEW_SITE_5", "fieldId": "F_STATUS", "optionId": "OPT_REV"}),
+            ],
+        )
+
+    def test_reconcile_degrades_cleanly_when_token_is_read_only(self) -> None:
+        def fake_requester(query: str, variables: dict, token: str) -> dict:
+            if query == PROJECT_META_QUERY:
+                return {
+                    "organization": {
+                        "projectV2": {
+                            "id": "PVT_1",
+                            "number": 1,
+                            "title": "totaldrop-kanban",
+                            "shortDescription": "",
+                            "url": "https://github.com/orgs/totaldrop-app/projects/1",
+                            "public": True,
+                            "closed": False,
+                            "updatedAt": "2026-11-16T10:00:00Z",
+                            "views": {"nodes": []},
+                            "fields": {
+                                "nodes": [
+                                    {
+                                        "__typename": "ProjectV2SingleSelectField",
+                                        "id": "F_STATUS",
+                                        "name": "Status",
+                                        "dataType": "SINGLE_SELECT",
+                                        "options": [
+                                            {"id": "OPT_BACKLOG", "name": "Backlog", "description": "", "color": "GRAY"},
+                                            {"id": "OPT_PROG", "name": "In progress", "description": "", "color": "YELLOW"},
+                                            {"id": "OPT_REV", "name": "In review", "description": "", "color": "PURPLE"},
+                                            {"id": "OPT_DONE", "name": "Done", "description": "", "color": "GREEN"},
+                                        ],
+                                    }
+                                ]
+                            },
+                        }
+                    }
+                }
+            if query == PROJECT_ITEMS_QUERY:
+                return {
+                    "organization": {
+                        "projectV2": {
+                            "items": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [],
+                            }
+                        }
+                    }
+                }
+            if query == ORG_REPOS_QUERY:
+                return {
+                    "organization": {
+                        "repositories": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"name": ".github", "nameWithOwner": "totaldrop-app/.github"}],
+                        }
+                    }
+                }
+            if query == REPO_OPEN_ISSUES_QUERY:
+                return {
+                    "repository": {
+                        "issues": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"id": "I_GH_5", "number": 5, "title": "Kanban workflow"}],
+                        }
+                    }
+                }
+            if query == REPO_OPEN_PRS_QUERY:
+                return {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [],
+                        }
+                    }
+                }
+            raise ProjectExportError("forbidden", "Resource not accessible by personal access token")
+
+        result = reconcile_project_board("totaldrop-app", 1, "ro-token", requester=fake_requester)
+        self.assertEqual(result["status"], "read_only_token")
+        self.assertEqual(result["planned_addition_count"], 1)
 
     def test_missing_project_and_missing_token_error_codes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

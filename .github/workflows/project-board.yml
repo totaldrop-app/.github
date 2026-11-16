@@ -31,13 +31,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Export sanitized Project #1 board snapshot
+      - name: Reconcile and export sanitized Project #1 board snapshot
         env:
           ORG_PROJECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          GH_PUBLIC_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IS_DRAFT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'true' || 'false' }}
         run: |
+          reconcile_flag=""
+          if [ "$IS_DRAFT_PR" != "true" ]; then
+            reconcile_flag="--reconcile"
+          fi
           python3 tools/export_project_board.py \
             --org totaldrop-app \
             --project-number 1 \
+            $reconcile_flag \
             --out-dir dist/project-board \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
