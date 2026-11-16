@@ -57,9 +57,21 @@ jobs:
           gov = Path("GOVERNANCE.md").read_text(encoding="utf-8")
           assert "@sadikkuzu" in gov and "@ozdil" in gov, "GOVERNANCE.md must list both Core Maintainers"
 
-          for yml_path in sorted(Path(".github/ISSUE_TEMPLATE").glob("*.yml")):
+          for yml_path in sorted(Path(".github/ISSUE_TEMPLATE").glob("*.yml")) + sorted(
+              Path(".github/workflows").glob("*.yml")
+          ):
               data = yaml.safe_load(yml_path.read_text(encoding="utf-8"))
               assert isinstance(data, dict) and data, f"Invalid YAML in {yml_path}"
 
-          print("All organization governance files, CODEOWNERS, and YAML templates validated.")
+          for checked in sorted(Path("tools").glob("*.py")) + sorted(
+              Path(".github/workflows").glob("*.yml")
+          ):
+              top = "\n".join(checked.read_text(encoding="utf-8").splitlines()[:6])
+              assert "SPDX-FileCopyrightText:" in top and "SPDX-License-Identifier:" in top, (
+                  f"Missing SPDX header in top 6 lines of {checked}"
+              )
+
+          print("All organization governance files, CODEOWNERS, SPDX headers, and YAML templates validated.")
           PY
+      - name: Run organization tool unit tests
+        run: python3 -m unittest discover -s tools -p "test_*.py" -v

@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: 2026 The TotalDrop Contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: Project Board Snapshot
+
+on:
+  issues:
+    types: [opened, closed, reopened, transferred]
+  pull_request:
+    paths:
+      - ".github/workflows/project-board.yml"
+      - "tools/export_project_board.py"
+      - "tools/test_export_project_board.py"
+  push:
+    branches: [main]
+  repository_dispatch:
+    types: [sync-project-board]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: project-board-${{ github.event.pull_request.number || 'org-sync' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  snapshot:
+    name: Export Project #1 Kanban Snapshot
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'totaldrop-app/.github'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Reconcile and export sanitized Project #1 board snapshot
+        env:
+          ORG_PROJECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
+          GH_PUBLIC_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IS_DRAFT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'true' || 'false' }}
+        run: |
+          reconcile_flag=""
+          if [ "$IS_DRAFT_PR" != "true" ]; then
+            reconcile_flag="--reconcile"
+          fi
+          python3 tools/export_project_board.py \
+            --org totaldrop-app \
+            --project-number 1 \
+            $reconcile_flag \
+            --out-dir dist/project-board \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Project #1 snapshot artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: project-1-snapshot
+          path: dist/project-board/
+          if-no-files-found: ignore
+          retention-days: 30
