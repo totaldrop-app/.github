@@ -4,6 +4,9 @@
 name: Project Board Snapshot
 
 on:
+  # `issues` events fire only for issues in `totaldrop-app/.github`.
+  # The other 12 organization repositories rely on `repository_dispatch`
+  # (`sync-project-board`) or the 15-minute `schedule` cron below.
   issues:
     types: [opened, closed, reopened, transferred]
   pull_request:
@@ -21,9 +24,14 @@ on:
 
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
 
 concurrency:
-  group: project-board-${{ github.event.pull_request.number || 'org-sync' }}
+  # Every writing run (push, issues, repository_dispatch, schedule, workflow_dispatch)
+  # shares a single group so concurrent runs cannot mutate Project #1 at the same time.
+  # Pull-request runs are strictly export-only (read-only) and stay isolated per PR.
+  group: ${{ github.event_name == 'pull_request' && format('project-board-pr-{0}', github.event.pull_request.number) || 'project-board-org-sync' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -34,15 +42,17 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Reconcile and export sanitized Project #1 board snapshot
         env:
           ORG_PROJECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN }}
           GH_PUBLIC_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IS_DRAFT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'true' || 'false' }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           reconcile_flag=""
-          if [ "$IS_DRAFT_PR" != "true" ]; then
+          if [ "$EVENT_NAME" != "pull_request" ]; then
             reconcile_flag="--reconcile"
           fi
           python3 tools/export_project_board.py \

@@ -39,7 +39,6 @@ BIDI_CODEPOINTS = frozenset(
     }
 )
 
-TITLE_ISSUE_RE = re.compile(r"(?<![A-Za-z0-9_./-])#(\d+)\b")
 PRIMARY_BODY_ISSUE_RE = re.compile(
     r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+"
     r"(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)|(?<![A-Za-z0-9_./-])#(\d+))\b"
@@ -196,7 +195,7 @@ query($org: String!, $number: Int!, $after: String) {
 ORG_REPOS_QUERY = """
 query($org: String!, $after: String) {
   organization(login: $org) {
-    repositories(first: 100, after: $after, isArchived: false) {
+    repositories(first: 100, after: $after, isArchived: false, privacy: PUBLIC) {
       pageInfo {
         hasNextPage
         endCursor
@@ -205,6 +204,7 @@ query($org: String!, $after: String) {
         id
         name
         nameWithOwner
+        isPrivate
       }
     }
   }
@@ -339,9 +339,19 @@ def sanitize_text(
     return result.strip(" ") if collapse_whitespace else result
 
 
-def escape_md_cell(value: str | None) -> str:
-    """Sanitize a string for safe inclusion inside a GitHub Markdown table cell."""
-    return sanitize_text(value, collapse_whitespace=True, escape_markdown_table=True)
+def escape_md_cell(value: str | None, *, already_sanitized: bool = False) -> str:
+    """Format a string for safe inclusion inside GitHub-Flavored Markdown.
+
+    When ``already_sanitized`` is True (for fields produced by ``fetch_project_snapshot``),
+    control/Bidi/backslash escapes are preserved without double-escaping backslashes while
+    whitespace is collapsed and Markdown table pipe characters are escaped.
+    """
+    if not value:
+        return ""
+    if not already_sanitized:
+        return sanitize_text(value, collapse_whitespace=True, escape_markdown_table=True)
+    collapsed = " ".join(value.replace("\r", " ").replace("\n", " ").replace("\t", " ").split())
+    return collapsed.replace("|", "\\|")
 
 
 def graphql_request(
@@ -528,8 +538,9 @@ def extract_pr_linked_issues(
     """Extract target (repo_full_name, issue_number) pairs linked to an open PR.
 
     Uses a two-tier rule:
-    1. Primary targets: GraphQL `closingIssuesReferences`, standalone `#N` in the PR title,
-       and `Closes`/`Fixes`/`Resolves` directives in the PR body.
+    1. Primary targets: GraphQL `closingIssuesReferences` and `Closes`/`Fixes`/`Resolves`
+       directives in the PR body (avoiding PR title `#N` false positives such as
+       `revert: undo #12` or `follow-up to #40`).
     2. Fallback targets (only when primary is empty): `Refs #N` / `Part of #N` in the PR body,
        avoiding false positives on follow-up tracking issues mentioned in PRs that already
        close their own primary issue.
@@ -543,10 +554,6 @@ def extract_pr_linked_issues(
         ref_repo = ((ref.get("repository") or {}).get("nameWithOwner")) or repo_full_name
         if isinstance(num, int):
             primary.add((str(ref_repo), num))
-
-    title = str(pr_node.get("title") or "")
-    for match_num in TITLE_ISSUE_RE.findall(title):
-        primary.add((repo_full_name, int(match_num)))
 
     body = str(pr_node.get("body") or "")
     for cross_repo, cross_num, local_num in PRIMARY_BODY_ISSUE_RE.findall(body):
@@ -605,14 +612,18 @@ def _fetch_org_repo_state(
     read_token: str,
     requester: Callable[[str, dict[str, Any], str], dict[str, Any]],
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]], set[tuple[str, int]], set[tuple[str, int]]]:
-    """Return org repos, open issues across non-archived repos, and ready/draft PR issue sets."""
+    """Return public org repos, open issues across non-archived public repos, and PR issue sets."""
     repos: list[dict[str, str]] = []
     cursor: str | None = None
     for _ in range(MAX_REPO_PAGES):
         data = requester(ORG_REPOS_QUERY, {"org": org, "after": cursor}, read_token)
         repos_conn = ((data.get("organization") or {}).get("repositories")) or {}
         for rnode in repos_conn.get("nodes") or []:
-            if isinstance(rnode, dict) and rnode.get("name") and rnode.get("nameWithOwner"):
+            if not isinstance(rnode, dict):
+                continue
+            if rnode.get("isPrivate") is True:
+                continue
+            if rnode.get("name") and rnode.get("nameWithOwner"):
                 repos.append(
                     {
                         "id": sanitize_text(str(rnode.get("id") or ""), collapse_whitespace=True),
@@ -624,6 +635,12 @@ def _fetch_org_repo_state(
         if not pinfo.get("hasNextPage") or not pinfo.get("endCursor"):
             break
         cursor = str(pinfo["endCursor"])
+    else:
+        raise ProjectExportError(
+            "pagination_limit_exceeded",
+            f"Exceeded {MAX_REPO_PAGES} pages while listing repositories for "
+            f"'{sanitize_text(org, collapse_whitespace=True)}'.",
+        )
 
     repos.sort(key=lambda entry: entry["full_name"])
     open_issues: list[dict[str, Any]] = []
@@ -655,6 +672,12 @@ def _fetch_org_repo_state(
             if not ipinfo.get("hasNextPage") or not ipinfo.get("endCursor"):
                 break
             icursor = str(ipinfo["endCursor"])
+        else:
+            raise ProjectExportError(
+                "pagination_limit_exceeded",
+                f"Exceeded {MAX_REPO_PAGES} pages while listing open issues for "
+                f"'{sanitize_text(repo_full, collapse_whitespace=True)}'.",
+            )
 
         pcursor: str | None = None
         for _ in range(MAX_REPO_PAGES):
@@ -676,6 +699,12 @@ def _fetch_org_repo_state(
             if not ppinfo.get("hasNextPage") or not ppinfo.get("endCursor"):
                 break
             pcursor = str(ppinfo["endCursor"])
+        else:
+            raise ProjectExportError(
+                "pagination_limit_exceeded",
+                f"Exceeded {MAX_REPO_PAGES} pages while listing open pull requests for "
+                f"'{sanitize_text(repo_full, collapse_whitespace=True)}'.",
+            )
 
     return repos, open_issues, ready_linked, draft_linked - ready_linked
 
@@ -695,12 +724,14 @@ def reconcile_project_board(
     number: int,
     project_token: str,
     *,
+    allow_private: bool = False,
     repo_read_token: str | None = None,
     post_add_settle_seconds: float = 2.5,
-    requester: Callable[[str, dict[str, Any], str], dict[str, Any]] = graphql_request,
+    requester: Callable[[str, dict[str, Any], str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Synchronize ProjectV2 Status columns, repository links, and open organization issues."""
-    meta_data = requester(PROJECT_META_QUERY, {"org": org, "number": number}, project_token)
+    req = requester or graphql_request
+    meta_data = req(PROJECT_META_QUERY, {"org": org, "number": number}, project_token)
     org_node = meta_data.get("organization")
     if not isinstance(org_node, dict) or not isinstance(org_node.get("projectV2"), dict):
         raise ProjectExportError(
@@ -709,6 +740,19 @@ def reconcile_project_board(
         )
 
     project = org_node["projectV2"]
+    is_public = bool(project.get("public", False))
+    if not is_public and not allow_private:
+        return {
+            "status": "skipped_private",
+            "planned_status_update_count": 0,
+            "planned_addition_count": 0,
+            "applied_status_update_count": 0,
+            "applied_addition_count": 0,
+            "newly_linked_repositories": [],
+            "status_updates": [],
+            "added_items": [],
+        }
+
     project_id = str(project.get("id") or "")
     already_linked_repos = {
         str(r.get("nameWithOwner"))
@@ -742,10 +786,10 @@ def reconcile_project_board(
     in_review_id, in_review_name = _find_option_id(option_map, "In review")
     done_id, done_name = _find_option_id(option_map, "Done")
 
-    existing_items = _fetch_paginated_items(org, number, project_token, requester)
+    existing_items = _fetch_paginated_items(org, number, project_token, req)
     read_tok = repo_read_token or project_token
     org_repos, open_issues, ready_linked, draft_only_linked = _fetch_org_repo_state(
-        org, read_tok, requester
+        org, read_tok, req
     )
 
     tracked_issues: set[tuple[str, int]] = set()
@@ -769,6 +813,9 @@ def reconcile_project_board(
         desired_option: tuple[str, str] | None = None
         reason = ""
 
+        # All CLOSED issues (COMPLETED, NOT_PLANNED, DUPLICATE) intentionally move to
+        # `Done` rather than auto-archiving so closed/shelved decisions remain visible
+        # on the public roadmap until a maintainer explicitly archives old cards.
         if state == "CLOSED":
             if current_status.lower() != done_name.lower():
                 desired_option = (done_id, done_name)
@@ -790,6 +837,9 @@ def reconcile_project_board(
             elif current_status.lower() == done_name.lower():
                 desired_option = (backlog_id, backlog_name)
                 reason = "reopened issue without open PR"
+            elif current_status.lower() == in_review_name.lower():
+                desired_option = (backlog_id, backlog_name)
+                reason = "open issue no longer has a linked open PR"
 
         if desired_option is not None:
             planned_updates.append(
@@ -832,7 +882,7 @@ def reconcile_project_board(
     for repo_info in org_repos:
         if repo_info["id"] and repo_info["full_name"] not in already_linked_repos:
             try:
-                requester(
+                req(
                     LINK_PROJECT_REPO_MUTATION,
                     {"projectId": project_id, "repositoryId": repo_info["id"]},
                     project_token,
@@ -841,15 +891,17 @@ def reconcile_project_board(
                     sanitize_text(repo_info["full_name"], collapse_whitespace=True)
                 )
             except ProjectExportError as exc:
-                repo_link_warning = str(exc)
-                break
+                if exc.code == "forbidden":
+                    repo_link_warning = str(exc)
+                    break
+                raise
 
     applied_updates: list[dict[str, str]] = []
     applied_additions: list[dict[str, str]] = []
 
     try:
         for upd in planned_updates:
-            requester(
+            req(
                 UPDATE_PROJECT_STATUS_MUTATION,
                 {
                     "projectId": project_id,
@@ -870,7 +922,7 @@ def reconcile_project_board(
 
         added_with_ids: list[tuple[str, dict[str, Any]]] = []
         for add in planned_additions:
-            add_resp = requester(
+            add_resp = req(
                 ADD_PROJECT_ITEM_MUTATION,
                 {"projectId": project_id, "contentId": add["content_id"]},
                 project_token,
@@ -887,7 +939,7 @@ def reconcile_project_board(
 
         for new_item_id, add in added_with_ids:
             if new_item_id:
-                requester(
+                req(
                     UPDATE_PROJECT_STATUS_MUTATION,
                     {
                         "projectId": project_id,
@@ -906,7 +958,7 @@ def reconcile_project_board(
             )
     except ProjectExportError as exc:
         if exc.code == "forbidden":
-            return {
+            ro_result: dict[str, Any] = {
                 "status": "read_only_token",
                 "message": str(exc),
                 "planned_status_update_count": len(planned_updates),
@@ -914,7 +966,12 @@ def reconcile_project_board(
                 "applied_status_update_count": len(applied_updates),
                 "applied_addition_count": len(applied_additions),
                 "newly_linked_repositories": newly_linked_repos,
+                "status_updates": applied_updates,
+                "added_items": applied_additions,
             }
+            if repo_link_warning:
+                ro_result["repo_link_warning"] = repo_link_warning
+            return ro_result
         raise
 
     result: dict[str, Any] = {
@@ -938,11 +995,12 @@ def fetch_project_snapshot(
     token: str,
     *,
     allow_private: bool = False,
-    requester: Callable[[str, dict[str, Any], str], dict[str, Any]] = graphql_request,
+    requester: Callable[[str, dict[str, Any], str], dict[str, Any]] | None = None,
     exported_at: str | None = None,
 ) -> dict[str, Any]:
     """Fetch ProjectV2 metadata and paginated items, enforcing public-visibility safety."""
-    meta_data = requester(PROJECT_META_QUERY, {"org": org, "number": number}, token)
+    req = requester or graphql_request
+    meta_data = req(PROJECT_META_QUERY, {"org": org, "number": number}, token)
     org_node = meta_data.get("organization")
     if not isinstance(org_node, dict) or not isinstance(org_node.get("projectV2"), dict):
         raise ProjectExportError(
@@ -1003,7 +1061,7 @@ def fetch_project_snapshot(
         if isinstance(v, dict)
     ]
 
-    all_items = _fetch_paginated_items(org, number, token, requester)
+    all_items = _fetch_paginated_items(org, number, token, req)
     active_items = [item for item in all_items if not item["is_archived"]]
     archived_count = len(all_items) - len(active_items)
 
@@ -1045,28 +1103,20 @@ def fetch_project_snapshot(
     }
 
 
-def _md_table_cell(sanitized_value: str | None) -> str:
-    """Format an already-sanitized snapshot string for a GitHub Markdown table cell."""
-    if not sanitized_value:
-        return ""
-    collapsed = " ".join(
-        sanitized_value.replace("\r", " ").replace("\n", " ").replace("\t", " ").split()
-    )
-    return collapsed.replace("|", "\\|")
-
-
 def render_markdown_summary(snapshot: dict[str, Any]) -> str:
     """Render a sanitized GitHub-Flavored Markdown report from a project snapshot."""
     if snapshot.get("skipped_private"):
         return (
             f"## Organization Project #{snapshot.get('number')} Snapshot Skipped\n\n"
-            f"`{_md_table_cell(snapshot.get('org'))}` Project #{snapshot.get('number')} "
+            f"`{escape_md_cell(snapshot.get('org'), already_sanitized=True)}` "
+            f"Project #{snapshot.get('number')} "
             "is currently set to **Private** visibility (`public=false`). "
             "Skipping public artifact export to prevent exposing private project items.\n"
         )
 
+    title = escape_md_cell(snapshot.get("title"), already_sanitized=True)
     lines: list[str] = [
-        f"# {snapshot.get('title', '')} (Project #{snapshot.get('number')})",
+        f"# {title} (Project #{snapshot.get('number')})",
         "",
         f"- **URL:** {snapshot.get('url', '')}",
         f"- **Exported at:** `{snapshot.get('exported_at', '')}`",
@@ -1077,21 +1127,22 @@ def render_markdown_summary(snapshot: dict[str, Any]) -> str:
     linked_repos = snapshot.get("linked_repositories") or []
     if linked_repos:
         lines.append(f"- **Linked repositories:** `{len(linked_repos)}`")
-    desc = snapshot.get("short_description") or ""
+    desc = escape_md_cell(snapshot.get("short_description"), already_sanitized=True)
     if desc:
         lines.append(f"- **Description:** {desc}")
 
     views = snapshot.get("views") or []
     if views:
         view_labels = [
-            f"`{_md_table_cell(v.get('name'))}` ({_md_table_cell(v.get('layout'))})"
+            f"`{escape_md_cell(v.get('name'), already_sanitized=True)}` "
+            f"({escape_md_cell(v.get('layout'), already_sanitized=True)})"
             for v in views
         ]
         lines.append(f"- **Views:** {', '.join(view_labels)}")
 
     reconcile = snapshot.get("reconcile")
     if isinstance(reconcile, dict):
-        r_status = _md_table_cell(str(reconcile.get("status") or ""))
+        r_status = escape_md_cell(str(reconcile.get("status") or ""), already_sanitized=True)
         if r_status == "applied":
             lines.append(
                 f"- **Reconciliation:** `applied` "
@@ -1117,10 +1168,12 @@ def render_markdown_summary(snapshot: dict[str, Any]) -> str:
         ]
     )
     for col in snapshot.get("columns") or []:
-        lines.append(f"| {_md_table_cell(col.get('name'))} | {col.get('count', 0)} |")
+        lines.append(
+            f"| {escape_md_cell(col.get('name'), already_sanitized=True)} | {col.get('count', 0)} |"
+        )
 
     for col in snapshot.get("columns") or []:
-        col_name = col.get("name") or ""
+        col_name = escape_md_cell(col.get("name"), already_sanitized=True)
         items = col.get("items") or []
         lines.extend(["", f"## {col_name} ({len(items)})", ""])
         if not items:
@@ -1137,7 +1190,9 @@ def render_markdown_summary(snapshot: dict[str, Any]) -> str:
             kind = content.get("kind")
             if kind in ("Issue", "PullRequest") and content.get("number") is not None:
                 repo_short = (content.get("repo") or "").split("/")[-1]
-                ref_label = f"{_md_table_cell(repo_short)}#{content.get('number')}"
+                ref_label = (
+                    f"{escape_md_cell(repo_short, already_sanitized=True)}#{content.get('number')}"
+                )
                 url = str(content.get("url") or "")
                 ref_cell = f"[{ref_label}]({url})" if url.startswith("https://") else ref_label
             elif kind == "DraftIssue":
@@ -1145,14 +1200,15 @@ def render_markdown_summary(snapshot: dict[str, Any]) -> str:
             else:
                 ref_cell = "`Item`"
 
-            title_cell = _md_table_cell(content.get("title"))
-            state_cell = _md_table_cell(content.get("state"))
+            title_cell = escape_md_cell(content.get("title"), already_sanitized=True)
+            state_cell = escape_md_cell(content.get("state"), already_sanitized=True)
             if kind == "PullRequest" and content.get("is_draft"):
                 state_cell = f"{state_cell} (DRAFT)"
-            milestone_cell = _md_table_cell(content.get("milestone") or "-")
+            milestone_cell = escape_md_cell(content.get("milestone") or "-", already_sanitized=True)
 
             extra_pairs = [
-                f"{_md_table_cell(k)}={_md_table_cell(v)}"
+                f"{escape_md_cell(k, already_sanitized=True)}="
+                f"{escape_md_cell(v, already_sanitized=True)}"
                 for k, v in sorted((item.get("fields") or {}).items())
                 if k != "Status"
             ]
@@ -1203,6 +1259,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.org,
                 args.project_number,
                 token,
+                allow_private=args.allow_private,
                 repo_read_token=repo_read_token,
             )
         snapshot = fetch_project_snapshot(

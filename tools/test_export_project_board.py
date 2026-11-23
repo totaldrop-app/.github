@@ -80,6 +80,41 @@ class ExportProjectBoardTests(unittest.TestCase):
             {("totaldrop-app/totaldrop", 490)},
         )
 
+        # Bare `#N` mentions in PR titles must NOT trigger false-positive issue links.
+        pr_revert_title = {
+            "title": "revert: undo #12",
+            "body": "Reverts earlier change pending investigation.",
+            "closingIssuesReferences": {"nodes": []},
+        }
+        self.assertEqual(
+            extract_pr_linked_issues("totaldrop-app/totaldrop", pr_revert_title),
+            set(),
+        )
+        pr_followup_title = {
+            "title": "chore: follow-up to #40",
+            "body": "",
+            "closingIssuesReferences": {"nodes": []},
+        }
+        self.assertEqual(
+            extract_pr_linked_issues("totaldrop-app/totaldrop", pr_followup_title),
+            set(),
+        )
+
+        # GraphQL closingIssuesReferences works for both local and cross-repo issues.
+        pr_graphql_refs = {
+            "title": "feat: cross-repo fix",
+            "body": "Refs #999",
+            "closingIssuesReferences": {
+                "nodes": [
+                    {"number": 42, "repository": {"nameWithOwner": "totaldrop-app/totaldrop-core"}}
+                ]
+            },
+        }
+        self.assertEqual(
+            extract_pr_linked_issues("totaldrop-app/totaldrop", pr_graphql_refs),
+            {("totaldrop-app/totaldrop-core", 42)},
+        )
+
     def test_private_project_fails_closed_without_querying_items(self) -> None:
         calls: list[str] = []
 
@@ -424,11 +459,13 @@ class ExportProjectBoardTests(unittest.TestCase):
                                     "id": "R_MONO",
                                     "name": "totaldrop",
                                     "nameWithOwner": "totaldrop-app/totaldrop",
+                                    "isPrivate": False,
                                 },
                                 {
                                     "id": "R_SITE",
                                     "name": "totaldrop-site",
                                     "nameWithOwner": "totaldrop-app/totaldrop-site",
+                                    "isPrivate": False,
                                 },
                             ],
                         }
@@ -467,7 +504,16 @@ class ExportProjectBoardTests(unittest.TestCase):
                                         "title": "feat: direct upgrade (#32)",
                                         "isDraft": False,
                                         "body": "",
-                                        "closingIssuesReferences": {"nodes": []},
+                                        "closingIssuesReferences": {
+                                            "nodes": [
+                                                {
+                                                    "number": 32,
+                                                    "repository": {
+                                                        "nameWithOwner": "totaldrop-app/totaldrop"
+                                                    },
+                                                }
+                                            ]
+                                        },
                                     },
                                     {
                                         "number": 499,
@@ -654,6 +700,578 @@ class ExportProjectBoardTests(unittest.TestCase):
             self.assertEqual(parsed["title"], "TotalDrop Board")
             self.assertIn("# TotalDrop Board", (out_dir / "project-1-snapshot.md").read_text(encoding="utf-8"))
             self.assertIn("# TotalDrop Board", summary_file.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _sample_project_meta(*, is_public: bool = True, linked_repos: list[dict] | None = None) -> dict:
+        return {
+            "organization": {
+                "projectV2": {
+                    "id": "PVT_1",
+                    "number": 1,
+                    "title": "totaldrop-kanban",
+                    "shortDescription": "",
+                    "url": "https://github.com/orgs/totaldrop-app/projects/1",
+                    "public": is_public,
+                    "closed": False,
+                    "updatedAt": "2026-11-16T10:00:00Z",
+                    "repositories": {"nodes": linked_repos or []},
+                    "views": {"nodes": []},
+                    "fields": {
+                        "nodes": [
+                            {
+                                "__typename": "ProjectV2SingleSelectField",
+                                "id": "F_STATUS",
+                                "name": "Status",
+                                "dataType": "SINGLE_SELECT",
+                                "options": [
+                                    {"id": "OPT_BACKLOG", "name": "Backlog", "description": "", "color": "GRAY"},
+                                    {"id": "OPT_READY", "name": "Ready", "description": "", "color": "BLUE"},
+                                    {"id": "OPT_PROG", "name": "In progress", "description": "", "color": "YELLOW"},
+                                    {"id": "OPT_REV", "name": "In review", "description": "", "color": "PURPLE"},
+                                    {"id": "OPT_DONE", "name": "Done", "description": "", "color": "GREEN"},
+                                ],
+                            }
+                        ]
+                    },
+                }
+            }
+        }
+
+    def test_org_repos_query_restricts_to_public_and_skips_private_nodes(self) -> None:
+        self.assertIn("privacy: PUBLIC", ORG_REPOS_QUERY)
+        self.assertIn("isPrivate", ORG_REPOS_QUERY)
+
+        queried_repos: list[str] = []
+        linked_repo_ids: list[str] = []
+
+        def fake_requester(query: str, variables: dict, token: str) -> dict:
+            if query == PROJECT_META_QUERY:
+                return self._sample_project_meta(is_public=True)
+            if query == PROJECT_ITEMS_QUERY:
+                return {
+                    "organization": {
+                        "projectV2": {
+                            "items": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}
+                        }
+                    }
+                }
+            if query == ORG_REPOS_QUERY:
+                return {
+                    "organization": {
+                        "repositories": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {
+                                    "id": "R_PUB",
+                                    "name": "totaldrop",
+                                    "nameWithOwner": "totaldrop-app/totaldrop",
+                                    "isPrivate": False,
+                                },
+                                {
+                                    "id": "R_SECRET",
+                                    "name": "internal-ops",
+                                    "nameWithOwner": "totaldrop-app/internal-ops",
+                                    "isPrivate": True,
+                                },
+                            ],
+                        }
+                    }
+                }
+            if query == REPO_OPEN_ISSUES_QUERY:
+                queried_repos.append(variables["name"])
+                return {
+                    "repository": {
+                        "issues": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}
+                    }
+                }
+            if query == REPO_OPEN_PRS_QUERY:
+                queried_repos.append(variables["name"])
+                return {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [],
+                        }
+                    }
+                }
+            if query == LINK_PROJECT_REPO_MUTATION:
+                linked_repo_ids.append(variables["repositoryId"])
+                return {"linkProjectV2ToRepository": {"repository": {"nameWithOwner": "totaldrop-app/totaldrop"}}}
+            raise AssertionError(f"Unexpected query: {query}")
+
+        result = reconcile_project_board(
+            "totaldrop-app",
+            1,
+            "write-token",
+            post_add_settle_seconds=0.0,
+            requester=fake_requester,
+        )
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual(queried_repos, ["totaldrop", "totaldrop"])
+        self.assertEqual(linked_repo_ids, ["R_PUB"])
+        self.assertEqual(result["newly_linked_repositories"], ["totaldrop-app/totaldrop"])
+
+    def test_reconcile_private_project_fails_closed_before_mutations(self) -> None:
+        calls: list[str] = []
+
+        def fake_requester(query: str, variables: dict, token: str) -> dict:
+            calls.append(query)
+            self.assertEqual(query, PROJECT_META_QUERY)
+            return self._sample_project_meta(is_public=False)
+
+        result = reconcile_project_board(
+            "totaldrop-app",
+            1,
+            "write-token",
+            post_add_settle_seconds=0.0,
+            requester=fake_requester,
+        )
+        self.assertEqual(calls, [PROJECT_META_QUERY])
+        self.assertEqual(result["status"], "skipped_private")
+        self.assertEqual(result["applied_status_update_count"], 0)
+        self.assertEqual(result["applied_addition_count"], 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            summary_file = Path(tmp) / "summary.md"
+            out_dir = Path(tmp) / "out"
+            with (
+                mock.patch.dict(os.environ, {"ORG_PROJECT_TOKEN": "tok"}, clear=False),
+                mock.patch("export_project_board.graphql_request", side_effect=fake_requester),
+            ):
+                rc = main(
+                    ["--reconcile", "--out-dir", str(out_dir), "--summary-file", str(summary_file)]
+                )
+            self.assertEqual(rc, 0)
+            self.assertFalse(out_dir.exists())
+            self.assertIn("Snapshot Skipped", summary_file.read_text(encoding="utf-8"))
+
+    def test_reconcile_re_raises_non_forbidden_repo_link_errors(self) -> None:
+        def make_requester(link_error_code: str):
+            def fake_requester(query: str, variables: dict, token: str) -> dict:
+                if query == PROJECT_META_QUERY:
+                    return self._sample_project_meta(is_public=True)
+                if query == PROJECT_ITEMS_QUERY:
+                    return {
+                        "organization": {
+                            "projectV2": {
+                                "items": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}
+                            }
+                        }
+                    }
+                if query == ORG_REPOS_QUERY:
+                    return {
+                        "organization": {
+                            "repositories": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [
+                                    {
+                                        "id": "R_1",
+                                        "name": "totaldrop",
+                                        "nameWithOwner": "totaldrop-app/totaldrop",
+                                        "isPrivate": False,
+                                    }
+                                ],
+                            }
+                        }
+                    }
+                if query == REPO_OPEN_ISSUES_QUERY:
+                    return {
+                        "repository": {
+                            "issues": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}
+                        }
+                    }
+                if query == REPO_OPEN_PRS_QUERY:
+                    return {
+                        "repository": {
+                            "pullRequests": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [],
+                            }
+                        }
+                    }
+                if query == LINK_PROJECT_REPO_MUTATION:
+                    raise ProjectExportError(link_error_code, f"boom: {link_error_code}")
+                raise AssertionError(f"Unexpected query: {query}")
+
+            return fake_requester
+
+        with self.assertRaises(ProjectExportError) as ctx:
+            reconcile_project_board(
+                "totaldrop-app",
+                1,
+                "write-token",
+                post_add_settle_seconds=0.0,
+                requester=make_requester("network_error"),
+            )
+        self.assertEqual(ctx.exception.code, "network_error")
+
+        res = reconcile_project_board(
+            "totaldrop-app",
+            1,
+            "write-token",
+            post_add_settle_seconds=0.0,
+            requester=make_requester("forbidden"),
+        )
+        self.assertEqual(res["status"], "applied")
+        self.assertIn("boom: forbidden", res["repo_link_warning"])
+
+    def test_reconcile_raises_on_repo_issue_and_pr_pagination_limits(self) -> None:
+        for overflow_stage in ("repos", "issues", "prs"):
+            with self.subTest(overflow_stage=overflow_stage):
+                def fake_requester(query: str, variables: dict, token: str) -> dict:
+                    if query == PROJECT_META_QUERY:
+                        return self._sample_project_meta(is_public=True)
+                    if query == PROJECT_ITEMS_QUERY:
+                        return {
+                            "organization": {
+                                "projectV2": {
+                                    "items": {
+                                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                        "nodes": [],
+                                    }
+                                }
+                            }
+                        }
+                    if query == ORG_REPOS_QUERY:
+                        has_next = overflow_stage == "repos"
+                        return {
+                            "organization": {
+                                "repositories": {
+                                    "pageInfo": {
+                                        "hasNextPage": has_next,
+                                        "endCursor": "CUR" if has_next else None,
+                                    },
+                                    "nodes": [
+                                        {
+                                            "id": "R_1",
+                                            "name": "totaldrop",
+                                            "nameWithOwner": "totaldrop-app/totaldrop",
+                                            "isPrivate": False,
+                                        }
+                                    ],
+                                }
+                            }
+                        }
+                    if query == REPO_OPEN_ISSUES_QUERY:
+                        has_next = overflow_stage == "issues"
+                        return {
+                            "repository": {
+                                "issues": {
+                                    "pageInfo": {
+                                        "hasNextPage": has_next,
+                                        "endCursor": "CUR" if has_next else None,
+                                    },
+                                    "nodes": [],
+                                }
+                            }
+                        }
+                    if query == REPO_OPEN_PRS_QUERY:
+                        has_next = overflow_stage == "prs"
+                        return {
+                            "repository": {
+                                "pullRequests": {
+                                    "pageInfo": {
+                                        "hasNextPage": has_next,
+                                        "endCursor": "CUR" if has_next else None,
+                                    },
+                                    "nodes": [],
+                                }
+                            }
+                        }
+                    raise AssertionError(f"Unexpected query: {query}")
+
+                with mock.patch("export_project_board.MAX_REPO_PAGES", 2):
+                    with self.assertRaises(ProjectExportError) as ctx:
+                        reconcile_project_board(
+                            "totaldrop-app",
+                            1,
+                            "write-token",
+                            post_add_settle_seconds=0.0,
+                            requester=fake_requester,
+                        )
+                self.assertEqual(ctx.exception.code, "pagination_limit_exceeded")
+
+    def test_reconcile_moves_unlinked_in_review_issue_back_to_backlog(self) -> None:
+        updates: list[dict] = []
+
+        def fake_requester(query: str, variables: dict, token: str) -> dict:
+            if query == PROJECT_META_QUERY:
+                return self._sample_project_meta(
+                    is_public=True,
+                    linked_repos=[{"id": "R_MONO", "nameWithOwner": "totaldrop-app/totaldrop"}],
+                )
+            if query == PROJECT_ITEMS_QUERY:
+                return {
+                    "organization": {
+                        "projectV2": {
+                            "items": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [
+                                    {
+                                        "id": "PVTI_STALE_REV",
+                                        "type": "ISSUE",
+                                        "isArchived": False,
+                                        "createdAt": "2026-11-01T00:00:00Z",
+                                        "updatedAt": "2026-11-15T00:00:00Z",
+                                        "fieldValues": {
+                                            "nodes": [
+                                                {
+                                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                                    "name": "In review",
+                                                    "optionId": "OPT_REV",
+                                                    "field": {"name": "Status"},
+                                                }
+                                            ]
+                                        },
+                                        "content": {
+                                            "__typename": "Issue",
+                                            "id": "I_77",
+                                            "number": 77,
+                                            "title": "PR closed without closing issue",
+                                            "state": "OPEN",
+                                            "stateReason": None,
+                                            "url": "https://github.com/totaldrop-app/totaldrop/issues/77",
+                                            "repository": {"nameWithOwner": "totaldrop-app/totaldrop"},
+                                            "milestone": None,
+                                            "labels": {"nodes": []},
+                                            "assignees": {"nodes": []},
+                                        },
+                                    },
+                                    {
+                                        "id": "PVTI_MANUAL_PROG",
+                                        "type": "ISSUE",
+                                        "isArchived": False,
+                                        "createdAt": "2026-11-01T00:00:00Z",
+                                        "updatedAt": "2026-11-15T00:00:00Z",
+                                        "fieldValues": {
+                                            "nodes": [
+                                                {
+                                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                                    "name": "In progress",
+                                                    "optionId": "OPT_PROG",
+                                                    "field": {"name": "Status"},
+                                                }
+                                            ]
+                                        },
+                                        "content": {
+                                            "__typename": "Issue",
+                                            "id": "I_78",
+                                            "number": 78,
+                                            "title": "Active local work without PR yet",
+                                            "state": "OPEN",
+                                            "stateReason": None,
+                                            "url": "https://github.com/totaldrop-app/totaldrop/issues/78",
+                                            "repository": {"nameWithOwner": "totaldrop-app/totaldrop"},
+                                            "milestone": None,
+                                            "labels": {"nodes": []},
+                                            "assignees": {"nodes": []},
+                                        },
+                                    },
+                                ],
+                            }
+                        }
+                    }
+                }
+            if query == ORG_REPOS_QUERY:
+                return {
+                    "organization": {
+                        "repositories": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {
+                                    "id": "R_MONO",
+                                    "name": "totaldrop",
+                                    "nameWithOwner": "totaldrop-app/totaldrop",
+                                    "isPrivate": False,
+                                }
+                            ],
+                        }
+                    }
+                }
+            if query == REPO_OPEN_ISSUES_QUERY:
+                return {
+                    "repository": {
+                        "issues": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {"id": "I_77", "number": 77, "title": "PR closed without closing issue"},
+                                {"id": "I_78", "number": 78, "title": "Active local work without PR yet"},
+                            ],
+                        }
+                    }
+                }
+            if query == REPO_OPEN_PRS_QUERY:
+                return {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [],
+                        }
+                    }
+                }
+            if query == UPDATE_PROJECT_STATUS_MUTATION:
+                updates.append(variables)
+                return {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": variables["itemId"]}}}
+            raise AssertionError(f"Unexpected query: {query}")
+
+        result = reconcile_project_board(
+            "totaldrop-app",
+            1,
+            "write-token",
+            post_add_settle_seconds=0.0,
+            requester=fake_requester,
+        )
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual(
+            updates,
+            [
+                {
+                    "projectId": "PVT_1",
+                    "itemId": "PVTI_STALE_REV",
+                    "fieldId": "F_STATUS",
+                    "optionId": "OPT_BACKLOG",
+                }
+            ],
+        )
+        self.assertEqual(
+            result["status_updates"],
+            [
+                {
+                    "ref": "totaldrop-app/totaldrop#77",
+                    "from": "In review",
+                    "to": "Backlog",
+                    "reason": "open issue no longer has a linked open PR",
+                }
+            ],
+        )
+
+    def test_reconcile_read_only_token_reports_partial_writes_and_repo_link_warning(self) -> None:
+        update_calls = 0
+
+        def fake_requester(query: str, variables: dict, token: str) -> dict:
+            nonlocal update_calls
+            if query == PROJECT_META_QUERY:
+                return self._sample_project_meta(is_public=True)
+            if query == PROJECT_ITEMS_QUERY:
+                return {
+                    "organization": {
+                        "projectV2": {
+                            "items": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [
+                                    {
+                                        "id": "PVTI_1",
+                                        "type": "ISSUE",
+                                        "isArchived": False,
+                                        "createdAt": "2026-11-01T00:00:00Z",
+                                        "updatedAt": "2026-11-15T00:00:00Z",
+                                        "fieldValues": {
+                                            "nodes": [
+                                                {
+                                                    "__typename": "ProjectV2ItemFieldSingleSelectValue",
+                                                    "name": "Backlog",
+                                                    "optionId": "OPT_BACKLOG",
+                                                    "field": {"name": "Status"},
+                                                }
+                                            ]
+                                        },
+                                        "content": {
+                                            "__typename": "Issue",
+                                            "id": "I_1",
+                                            "number": 1,
+                                            "title": "Closed item",
+                                            "state": "CLOSED",
+                                            "stateReason": "COMPLETED",
+                                            "url": "https://github.com/totaldrop-app/totaldrop/issues/1",
+                                            "repository": {"nameWithOwner": "totaldrop-app/totaldrop"},
+                                            "milestone": None,
+                                            "labels": {"nodes": []},
+                                            "assignees": {"nodes": []},
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    }
+                }
+            if query == ORG_REPOS_QUERY:
+                return {
+                    "organization": {
+                        "repositories": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {
+                                    "id": "R_1",
+                                    "name": "totaldrop",
+                                    "nameWithOwner": "totaldrop-app/totaldrop",
+                                    "isPrivate": False,
+                                }
+                            ],
+                        }
+                    }
+                }
+            if query == REPO_OPEN_ISSUES_QUERY:
+                return {
+                    "repository": {
+                        "issues": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"id": "I_2", "number": 2, "title": "New open issue"}],
+                        }
+                    }
+                }
+            if query == REPO_OPEN_PRS_QUERY:
+                return {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [],
+                        }
+                    }
+                }
+            if query == LINK_PROJECT_REPO_MUTATION:
+                raise ProjectExportError("forbidden", "Cannot link repo")
+            if query == UPDATE_PROJECT_STATUS_MUTATION:
+                update_calls += 1
+                return {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": variables["itemId"]}}}
+            if query == ADD_PROJECT_ITEM_MUTATION:
+                raise ProjectExportError("forbidden", "Cannot add item")
+            raise AssertionError(f"Unexpected query: {query}")
+
+        result = reconcile_project_board(
+            "totaldrop-app",
+            1,
+            "partial-token",
+            post_add_settle_seconds=0.0,
+            requester=fake_requester,
+        )
+        self.assertEqual(result["status"], "read_only_token")
+        self.assertEqual(update_calls, 1)
+        self.assertEqual(len(result["status_updates"]), 1)
+        self.assertEqual(result["status_updates"][0]["ref"], "totaldrop-app/totaldrop#1")
+        self.assertEqual(result["added_items"], [])
+        self.assertEqual(result["repo_link_warning"], "Cannot link repo")
+
+    def test_render_markdown_summary_escapes_title_and_short_description(self) -> None:
+        snapshot = {
+            "exported_at": "2026-11-16T11:00:00Z",
+            "org": "totaldrop-app",
+            "number": 1,
+            "title": "TotalDrop | Roadmap\nLine2",
+            "short_description": "Track | issues\tacross repos",
+            "url": "https://github.com/orgs/totaldrop-app/projects/1",
+            "public": True,
+            "closed": False,
+            "updated_at": "2026-11-16T10:00:00Z",
+            "skipped_private": False,
+            "views": [],
+            "fields": [],
+            "active_item_count": 0,
+            "archived_item_count": 0,
+            "columns": [],
+        }
+        md = render_markdown_summary(snapshot)
+        self.assertIn("# TotalDrop \\| Roadmap Line2 (Project #1)", md)
+        self.assertIn("- **Description:** Track \\| issues across repos", md)
 
 
 if __name__ == "__main__":
