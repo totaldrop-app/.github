@@ -21,7 +21,7 @@ TotalDrop is stewarded jointly by two Core Maintainers — **[@ozdil](https://gi
 | **Developer** | Opens branches and pull requests across repositories; all pull requests require `CI` green and Core Maintainer approval | [@zaforcan](https://github.com/zaforcan) |
 | **Sub-Platform & Area Contributors** | Maintain or contribute to specific client platforms (`Linux`, `Android`, `Windows`, `macOS`, `iOS/tvOS`, `CLI/BSD`), sub-platform × CPU units (`x86_64`, `arm64`, `riscv64`), formal verification (`Tamarin` / `cargo-fuzz`), or 35-language localization (`l10n`) | Open to contributors following [CONTRIBUTING.md](CONTRIBUTING.md) |
 | **Tester** | Validates pre-release builds across desktop, mobile, and TV hardware and reports regressions | Invited beta testers and community testers |
-| **Security Contact** | Monitors `security@totaldrop.app` and GitHub Private Vulnerability Reporting; responds within 72 hours | [@ozdil](https://github.com/ozdil) |
+| **Security Contact** | Monitors `security@totaldrop.app` and GitHub Private Vulnerability Reporting; responds within 72 hours | [@ozdil](https://github.com/ozdil) (primary), [@sadikkuzu](https://github.com/sadikkuzu) (backup) |
 
 AI coding assistants help author code, tests, packaging recipes, and independent diff audits, but hold **no governance authority**: every merge onto `main` requires passing `CI` and explicit human Co-Maintainer approval (`@sadikkuzu` / `@ozdil`).
 
@@ -29,4 +29,4 @@ AI coding assistants help author code, tests, packaging recipes, and independent
 
 - All source code, sub-platform × CPU build recipes, formal Tamarin security models, 35-language catalogs, and GitHub Actions release workflows are public and reproducible; releases build exclusively in GitHub Actions, never on personal machines.
 - Both [@ozdil](https://github.com/ozdil) and [@sadikkuzu](https://github.com/sadikkuzu) are owners of the `totaldrop-app` GitHub organization, ensuring repository governance continuity.
-- Production deployment secrets (`CLOUDFLARE_API_TOKEN`, `ANDROID_UPLOAD_KEYSTORE`) reside strictly inside protected GitHub environments; Linux and CLI build provenance uses keyless OIDC Sigstore attestations. Expanding shared operational custody of external cloud/store accounts to both Co-Maintainers remains an active continuity milestone prior to `1.0`.
+- Production deployment secrets (`CLOUDFLARE_API_TOKEN`, `ANDROID_UPLOAD_KEYSTORE`) reside strictly inside protected GitHub environments; Linux and CLI build provenance uses keyless OIDC Sigstore attestations. Production release environment approvals (`cloudflare`, `linux-release`, `play-release`, `windows-release`, `apple-release`) currently reside with [@ozdil](https://github.com/ozdil); extending shared release-environment approval and external cloud/store account custody to both Co-Maintainers remains an active continuity milestone prior to `1.0`.

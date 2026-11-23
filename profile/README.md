@@ -20,7 +20,7 @@ All engineering, issues, pull requests, code reviews, and documentation across `
 
 | Repository | Scope | Sub-Platform Formats & CPU Architectures |
 | :--- | :--- | :--- |
-| **[totaldrop-core](https://github.com/totaldrop-app/totaldrop-core)** | Shared Rust protocol (`CPace`, `Noise XXpsk3`, `ML-KEM-768`), Ghost Ring primitives, 35-language `l10n/` single source of truth, and canonical `docs/` | `x86_64`, `arm64`, `riscv64gc`, `armv7`, `wasm32-simd128` _(WASI / pure-Rust only; browser target shelved)_ |
+| **[totaldrop-core](https://github.com/totaldrop-app/totaldrop-core)** | Shared Rust protocol (`CPace`, `Noise XXpsk3`, `ML-KEM-768`), Ghost Ring primitives, 35-language `l10n/` single source of truth, and canonical `docs/` | `x86_64`, `arm64`, `riscv64gc`, `armv7`, `wasm32-simd128` _(pure-Rust `wasm32-unknown-unknown` library check only; browser target shelved)_ |
 | **[totaldrop-formal-fuzz](https://github.com/totaldrop-app/totaldrop-formal-fuzz)** | Tamarin Prover symbolic security proofs & `cargo-fuzz` harnesses | Formal models (`formal/*.spthy`) & continuous fuzzing |
 | **[totaldrop-servers](https://github.com/totaldrop-app/totaldrop-servers)** | Cloudflare Rendezvous & Relay Workers + self-hosted Rust servers | Cloudflare Edge + Linux (`x86_64`, `arm64`) |
 | **[totaldrop-site](https://github.com/totaldrop-app/totaldrop-site)** | `totaldrop.app` static site, 35-language URLs & privacy policy | Cloudflare Pages (`totaldrop.app`) |
@@ -30,9 +30,9 @@ All engineering, issues, pull requests, code reviews, and documentation across `
 | **[totaldrop-macos](https://github.com/totaldrop-app/totaldrop-macos)** | Native SwiftUI 6 / AppKit macOS client | `dmg`, `pkg`, `homebrew` (`arm64`, `x86_64`) |
 | **[totaldrop-ios-tvos](https://github.com/totaldrop-app/totaldrop-ios-tvos)** | Native SwiftUI 6 iOS, iPadOS & tvOS client + Share Extension | `ios-ipa`, `tvos-ipa` (`arm64`, `sim-arm64`, `sim-x86_64`) |
 | **[totaldrop-cli-bsd](https://github.com/totaldrop-app/totaldrop-cli-bsd)** | Standalone terminal CLI & BSD packages | `static-tar.gz`, `freebsd-pkg`, `openbsd-pkg` (`x86_64`, `arm64`, `riscv64`) |
-| **[totaldrop-web-wasm](https://github.com/totaldrop-app/totaldrop-web-wasm)** | _Reserved / shelved_[^web-wasm] | Reserved (`wasm32-simd128`, `wasm32-baseline` shelved) |
+| **[totaldrop-web-wasm](https://github.com/totaldrop-app/totaldrop-web-wasm)** | _Reserved / shelved_[^web-wasm] | None (`wasm32-simd128`, `wasm32-baseline` shelved) |
 
-[^web-wasm]: Browser receiver is marked `Not planned` in [totaldrop-app/totaldrop#30](https://github.com/totaldrop-app/totaldrop/issues/30); Rendezvous and Relay servers reject WebSocket requests carrying a browser `Origin` header with HTTP `403` per [totaldrop-app/totaldrop#453](https://github.com/totaldrop-app/totaldrop/pull/453) and threat model [T9](https://github.com/totaldrop-app/totaldrop/blob/main/docs/tehdit-modeli.md#L73).
+[^web-wasm]: Browser receiver is marked `Not planned` in [totaldrop-app/totaldrop#30](https://github.com/totaldrop-app/totaldrop/issues/30); Rendezvous and Relay servers reject WebSocket requests carrying a browser `Origin` header with HTTP `403` per [totaldrop-app/totaldrop#450](https://github.com/totaldrop-app/totaldrop/issues/450), [totaldrop-app/totaldrop#453](https://github.com/totaldrop-app/totaldrop/pull/453), and threat model [T9](https://github.com/totaldrop-app/totaldrop/blob/3d43e09279dc80b532beb0efe1c522233ad84ca1/docs/tehdit-modeli.md?plain=1#L73).
 
 ## Contributing
 
