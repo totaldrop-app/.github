@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 The TotalDrop Contributors -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+
 # AGENTS.md — Engineering, Co-Maintainer & AI Contributor Guidelines
 
 Welcome to the **TotalDrop** multi-repository ecosystem (`https://github.com/totaldrop-app`).
@@ -48,12 +51,20 @@ these rules without exception:
      strings or weaken `l10n/status.json` critical security string gates.
 
 6. **Quality Gates Before Every Commit:**
-   - `cargo fmt --all -- --check`
-   - `cargo clippy --workspace --all-targets --locked -- -D warnings`
-   - `cargo test --workspace --locked`
-   - `./tools/check-spdx.sh` (every new `.rs`, `.ts`, `.js`, `.mjs`, `.sh`,
-     `.py`, `.css` file must include `SPDX-FileCopyrightText` and
-     `SPDX-License-Identifier` in its top 6 lines).
-   - Never commit signing keys, tokens, or `.gitleaksignore`, and never probe or
-     load-test live production endpoints (`totaldrop.app`, `rendezvous.totaldrop.app`,
-     `relay.totaldrop.app`) outside approved deployment health probes.
+   - **In this repository (`totaldrop-app/.github`):**
+     - Run the governance, `CODEOWNERS`, and YAML issue-form checks defined in
+       `.github/workflows/ci.yml` (plus `python3 -m unittest discover -s tools -p "test_*.py" -v`
+       when Python tool tests are present).
+   - **In Rust workspace repositories (`totaldrop`, `totaldrop-core`, `totaldrop-servers`, and client repos):**
+     - `cargo fmt --all -- --check`
+     - `cargo clippy --workspace --all-targets --locked -- -D warnings`
+     - `cargo test --workspace --locked`
+     - `./tools/check-spdx.sh` (every new `.rs`, `.ts`, `.js`, `.mjs`, `.sh`,
+       `.py`, `.css` file must include `SPDX-FileCopyrightText` and
+       `SPDX-License-Identifier` in its top 6 lines).
+   - **Across all repositories:**
+     - Never commit signing keys or tokens, never add entries to `.gitleaksignore`
+       to allowlist real secrets or silence valid scanner findings, and never probe
+       or load-test live production endpoints (`totaldrop.app`,
+       `rendezvous.totaldrop.app`, `relay.totaldrop.app`) outside approved
+       deployment health probes.

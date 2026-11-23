@@ -23,13 +23,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Validate governance files, CODEOWNERS, and YAML issue templates
         run: |
-          python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet --user pyyaml
+          python3 -c "import yaml" 2>/dev/null || python3 -m pip install --quiet --break-system-packages pyyaml
           python3 - <<'PY'
           from pathlib import Path
-          import sys
           import yaml
 
           required = [
@@ -51,8 +52,15 @@ jobs:
               p = Path(rel)
               assert p.is_file() and p.stat().st_size > 0, f"Missing or empty required file: {rel}"
 
-          codeowners = Path(".github/CODEOWNERS").read_text(encoding="utf-8")
-          assert "@sadikkuzu" in codeowners and "@ozdil" in codeowners, "CODEOWNERS must list both @sadikkuzu and @ozdil"
+          codeowners_rules = [
+              line.strip()
+              for line in Path(".github/CODEOWNERS").read_text(encoding="utf-8").splitlines()
+              if line.strip() and not line.lstrip().startswith("#")
+          ]
+          assert any(
+              line.startswith("*") and "@sadikkuzu" in line and "@ozdil" in line
+              for line in codeowners_rules
+          ), "CODEOWNERS must contain a non-comment '*' rule listing both @sadikkuzu and @ozdil"
 
           gov = Path("GOVERNANCE.md").read_text(encoding="utf-8")
           assert "@sadikkuzu" in gov and "@ozdil" in gov, "GOVERNANCE.md must list both Core Maintainers"
@@ -62,6 +70,12 @@ jobs:
           ):
               data = yaml.safe_load(yml_path.read_text(encoding="utf-8"))
               assert isinstance(data, dict) and data, f"Invalid YAML in {yml_path}"
+              if yml_path.parent.name == "ISSUE_TEMPLATE" and yml_path.name != "config.yml":
+                  for req_key in ("name", "description", "body"):
+                      assert data.get(req_key), f"Issue form {yml_path} missing required key: {req_key}"
+                  assert isinstance(data["body"], list) and data["body"], (
+                      f"Issue form {yml_path} 'body' must be a non-empty list"
+                  )
 
           for checked in sorted(Path("tools").glob("*.py")) + sorted(
               Path(".github/workflows").glob("*.yml")
